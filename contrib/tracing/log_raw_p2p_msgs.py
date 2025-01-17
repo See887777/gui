@@ -41,7 +41,8 @@ from bcc import BPF, USDT
 program = """
 #include <uapi/linux/ptrace.h>
 
-#define MIN(a,b) ({ __typeof__ (a) _a = (a); __typeof__ (b) _b = (b); _a < _b ? _a : _b; })
+// A min() macro. Prefixed with _TRACEPOINT_TEST to avoid collision with other MIN macros.
+#define _TRACEPOINT_TEST_MIN(a,b) ({ __typeof__ (a) _a = (a); __typeof__ (b) _b = (b); _a < _b ? _a : _b; })
 
 // Maximum possible allocation size
 // from include/linux/percpu.h in the Linux kernel
@@ -88,7 +89,7 @@ int trace_inbound_message(struct pt_regs *ctx) {
     bpf_usdt_readarg_p(3, ctx, &msg->peer_conn_type, MAX_PEER_CONN_TYPE_LENGTH);
     bpf_usdt_readarg_p(4, ctx, &msg->msg_type, MAX_MSG_TYPE_LENGTH);
     bpf_usdt_readarg(5, ctx, &msg->msg_size);
-    bpf_usdt_readarg_p(6, ctx, &msg->msg, MIN(msg->msg_size, MAX_MSG_DATA_LENGTH));
+    bpf_usdt_readarg_p(6, ctx, &msg->msg, _TRACEPOINT_TEST_MIN(msg->msg_size, MAX_MSG_DATA_LENGTH));
 
     inbound_messages.perf_submit(ctx, msg, sizeof(*msg));
     return 0;
@@ -108,7 +109,7 @@ int trace_outbound_message(struct pt_regs *ctx) {
     bpf_usdt_readarg_p(3, ctx, &msg->peer_conn_type, MAX_PEER_CONN_TYPE_LENGTH);
     bpf_usdt_readarg_p(4, ctx, &msg->msg_type, MAX_MSG_TYPE_LENGTH);
     bpf_usdt_readarg(5, ctx, &msg->msg_size);
-    bpf_usdt_readarg_p(6, ctx, &msg->msg,  MIN(msg->msg_size, MAX_MSG_DATA_LENGTH));
+    bpf_usdt_readarg_p(6, ctx, &msg->msg,  _TRACEPOINT_TEST_MIN(msg->msg_size, MAX_MSG_DATA_LENGTH));
 
     outbound_messages.perf_submit(ctx, msg, sizeof(*msg));
     return 0;
@@ -117,9 +118,9 @@ int trace_outbound_message(struct pt_regs *ctx) {
 
 
 def print_message(event, inbound):
-    print(f"%s %s msg '%s' from peer %d (%s, %s) with %d bytes: %s" %
-          (
-              f"Warning: incomplete message (only %d out of %d bytes)!" % (
+    print("{} {} msg '{}' from peer {} ({}, {}) with {} bytes: {}".format(
+
+              "Warning: incomplete message (only {} out of {} bytes)!".format(
                   len(event.msg), event.msg_size) if len(event.msg) < event.msg_size else "",
               "inbound" if inbound else "outbound",
               event.msg_type.decode("utf-8"),
@@ -132,8 +133,9 @@ def print_message(event, inbound):
           )
 
 
-def main(bitcoind_path):
-    bitcoind_with_usdts = USDT(path=str(bitcoind_path))
+def main(pid):
+    print(f"Hooking into bitcoind with pid {pid}")
+    bitcoind_with_usdts = USDT(pid=int(pid))
 
     # attaching the trace functions defined in the BPF program to the tracepoints
     bitcoind_with_usdts.enable_probe(
@@ -176,8 +178,8 @@ def main(bitcoind_path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("USAGE:", sys.argv[0], "path/to/bitcoind")
+    if len(sys.argv) != 2:
+        print("USAGE:", sys.argv[0], "<pid of bitcoind>")
         exit()
-    path = sys.argv[1]
-    main(path)
+    pid = sys.argv[1]
+    main(pid)

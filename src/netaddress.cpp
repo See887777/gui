@@ -20,6 +20,9 @@
 #include <iterator>
 #include <tuple>
 
+using util::ContainsNoNUL;
+using util::HasPrefix;
+
 CNetAddr::BIP155Network CNetAddr::GetBIP155Network() const
 {
     switch (m_net) {
@@ -242,14 +245,14 @@ bool CNetAddr::SetTor(const std::string& addr)
         Span<const uint8_t> input_checksum{input->data() + ADDR_TORV3_SIZE, torv3::CHECKSUM_LEN};
         Span<const uint8_t> input_version{input->data() + ADDR_TORV3_SIZE + torv3::CHECKSUM_LEN, sizeof(torv3::VERSION)};
 
-        if (input_version != torv3::VERSION) {
+        if (!std::ranges::equal(input_version, torv3::VERSION)) {
             return false;
         }
 
         uint8_t calculated_checksum[torv3::CHECKSUM_LEN];
         torv3::Checksum(input_pubkey, calculated_checksum);
 
-        if (input_checksum != calculated_checksum) {
+        if (!std::ranges::equal(input_checksum, calculated_checksum)) {
             return false;
         }
 
@@ -308,10 +311,6 @@ bool CNetAddr::IsBindAny() const
     }
     return std::all_of(m_addr.begin(), m_addr.end(), [](uint8_t b) { return b == 0; });
 }
-
-bool CNetAddr::IsIPv4() const { return m_net == NET_IPV4; }
-
-bool CNetAddr::IsIPv6() const { return m_net == NET_IPV6; }
 
 bool CNetAddr::IsRFC1918() const
 {
@@ -400,22 +399,6 @@ bool CNetAddr::IsHeNet() const
     return IsIPv6() && HasPrefix(m_addr, std::array<uint8_t, 4>{0x20, 0x01, 0x04, 0x70});
 }
 
-/**
- * Check whether this object represents a TOR address.
- * @see CNetAddr::SetSpecial(const std::string &)
- */
-bool CNetAddr::IsTor() const { return m_net == NET_ONION; }
-
-/**
- * Check whether this object represents an I2P address.
- */
-bool CNetAddr::IsI2P() const { return m_net == NET_I2P; }
-
-/**
- * Check whether this object represents a CJDNS address.
- */
-bool CNetAddr::IsCJDNS() const { return m_net == NET_CJDNS; }
-
 bool CNetAddr::IsLocal() const
 {
     // IPv4 loopback (127.0.0.0/8 or 0.0.0.0/8)
@@ -450,8 +433,7 @@ bool CNetAddr::IsValid() const
         return false;
     }
 
-    // CJDNS addresses always start with 0xfc
-    if (IsCJDNS() && (m_addr[0] != 0xFC)) {
+    if (IsCJDNS() && !HasCJDNSPrefix()) {
         return false;
     }
 
@@ -836,6 +818,19 @@ bool CService::SetSockAddr(const struct sockaddr *paddr)
         return true;
     default:
         return false;
+    }
+}
+
+sa_family_t CService::GetSAFamily() const
+{
+    switch (m_net) {
+    case NET_IPV4:
+        return AF_INET;
+    case NET_IPV6:
+    case NET_CJDNS:
+        return AF_INET6;
+    default:
+        return AF_UNSPEC;
     }
 }
 

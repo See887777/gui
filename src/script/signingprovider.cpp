@@ -62,6 +62,11 @@ bool FlatSigningProvider::GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info)
     if (ret) info = std::move(out.second);
     return ret;
 }
+bool FlatSigningProvider::HaveKey(const CKeyID &keyid) const
+{
+    CKey key;
+    return LookupHelper(keys, keyid, key);
+}
 bool FlatSigningProvider::GetKey(const CKeyID& keyid, CKey& key) const { return LookupHelper(keys, keyid, key); }
 bool FlatSigningProvider::GetTaprootSpendData(const XOnlyPubKey& output_key, TaprootSpendData& spenddata) const
 {
@@ -157,8 +162,10 @@ bool FillableSigningProvider::GetKey(const CKeyID &address, CKey &keyOut) const
 
 bool FillableSigningProvider::AddCScript(const CScript& redeemScript)
 {
-    if (redeemScript.size() > MAX_SCRIPT_ELEMENT_SIZE)
-        return error("FillableSigningProvider::AddCScript(): redeemScripts > %i bytes are invalid", MAX_SCRIPT_ELEMENT_SIZE);
+    if (redeemScript.size() > MAX_SCRIPT_ELEMENT_SIZE) {
+        LogError("FillableSigningProvider::AddCScript(): redeemScripts > %i bytes are invalid\n", MAX_SCRIPT_ELEMENT_SIZE);
+        return false;
+    }
 
     LOCK(cs_KeyStore);
     mapScripts[CScriptID(redeemScript)] = redeemScript;
@@ -225,6 +232,61 @@ CKeyID GetKeyForDestination(const SigningProvider& store, const CTxDestination& 
     }
     return CKeyID();
 }
+
+void MultiSigningProvider::AddProvider(std::unique_ptr<SigningProvider> provider)
+{
+    m_providers.push_back(std::move(provider));
+}
+
+bool MultiSigningProvider::GetCScript(const CScriptID& scriptid, CScript& script) const
+{
+    for (const auto& provider: m_providers) {
+        if (provider->GetCScript(scriptid, script)) return true;
+    }
+    return false;
+}
+
+bool MultiSigningProvider::GetPubKey(const CKeyID& keyid, CPubKey& pubkey) const
+{
+    for (const auto& provider: m_providers) {
+        if (provider->GetPubKey(keyid, pubkey)) return true;
+    }
+    return false;
+}
+
+
+bool MultiSigningProvider::GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info) const
+{
+    for (const auto& provider: m_providers) {
+        if (provider->GetKeyOrigin(keyid, info)) return true;
+    }
+    return false;
+}
+
+bool MultiSigningProvider::GetKey(const CKeyID& keyid, CKey& key) const
+{
+    for (const auto& provider: m_providers) {
+        if (provider->GetKey(keyid, key)) return true;
+    }
+    return false;
+}
+
+bool MultiSigningProvider::GetTaprootSpendData(const XOnlyPubKey& output_key, TaprootSpendData& spenddata) const
+{
+    for (const auto& provider: m_providers) {
+        if (provider->GetTaprootSpendData(output_key, spenddata)) return true;
+    }
+    return false;
+}
+
+bool MultiSigningProvider::GetTaprootBuilder(const XOnlyPubKey& output_key, TaprootBuilder& builder) const
+{
+    for (const auto& provider: m_providers) {
+        if (provider->GetTaprootBuilder(output_key, builder)) return true;
+    }
+    return false;
+}
+
 /*static*/ TaprootBuilder::NodeInfo TaprootBuilder::Combine(NodeInfo&& a, NodeInfo&& b)
 {
     NodeInfo ret;
@@ -514,7 +576,7 @@ std::vector<std::tuple<uint8_t, uint8_t, std::vector<unsigned char>>> TaprootBui
             assert(leaf.merkle_branch.size() <= TAPROOT_CONTROL_MAX_NODE_COUNT);
             uint8_t depth = (uint8_t)leaf.merkle_branch.size();
             uint8_t leaf_ver = (uint8_t)leaf.leaf_version;
-            tuples.push_back(std::make_tuple(depth, leaf_ver, leaf.script));
+            tuples.emplace_back(depth, leaf_ver, leaf.script);
         }
     }
     return tuples;

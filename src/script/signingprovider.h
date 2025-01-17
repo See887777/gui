@@ -150,7 +150,7 @@ std::optional<std::vector<std::tuple<int, std::vector<unsigned char>, int>>> Inf
 class SigningProvider
 {
 public:
-    virtual ~SigningProvider() {}
+    virtual ~SigningProvider() = default;
     virtual bool GetCScript(const CScriptID &scriptid, CScript& script) const { return false; }
     virtual bool HaveCScript(const CScriptID &scriptid) const { return false; }
     virtual bool GetPubKey(const CKeyID &address, CPubKey& pubkey) const { return false; }
@@ -215,6 +215,7 @@ struct FlatSigningProvider final : public SigningProvider
     bool GetCScript(const CScriptID& scriptid, CScript& script) const override;
     bool GetPubKey(const CKeyID& keyid, CPubKey& pubkey) const override;
     bool GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info) const override;
+    bool HaveKey(const CKeyID &keyid) const override;
     bool GetKey(const CKeyID& keyid, CKey& key) const override;
     bool GetTaprootSpendData(const XOnlyPubKey& output_key, TaprootSpendData& spenddata) const override;
     bool GetTaprootBuilder(const XOnlyPubKey& output_key, TaprootBuilder& builder) const override;
@@ -297,5 +298,20 @@ public:
 
 /** Return the CKeyID of the key involved in a script (if there is a unique one). */
 CKeyID GetKeyForDestination(const SigningProvider& store, const CTxDestination& dest);
+
+/** A signing provider to be used to interface with multiple signing providers at once. */
+class MultiSigningProvider: public SigningProvider {
+    std::vector<std::unique_ptr<SigningProvider>> m_providers;
+
+public:
+    void AddProvider(std::unique_ptr<SigningProvider> provider);
+
+    bool GetCScript(const CScriptID& scriptid, CScript& script) const override;
+    bool GetPubKey(const CKeyID& keyid, CPubKey& pubkey) const override;
+    bool GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info) const override;
+    bool GetKey(const CKeyID& keyid, CKey& key) const override;
+    bool GetTaprootSpendData(const XOnlyPubKey& output_key, TaprootSpendData& spenddata) const override;
+    bool GetTaprootBuilder(const XOnlyPubKey& output_key, TaprootBuilder& builder) const override;
+};
 
 #endif // BITCOIN_SCRIPT_SIGNINGPROVIDER_H

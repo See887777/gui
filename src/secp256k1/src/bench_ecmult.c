@@ -71,7 +71,7 @@ static void bench_ecmult_teardown_helper(bench_data* data, size_t* seckey_offset
     secp256k1_scalar sum_scalars;
 
     secp256k1_gej_set_infinity(&sum_output);
-    secp256k1_scalar_clear(&sum_scalars);
+    secp256k1_scalar_set_int(&sum_scalars, 0);
     for (i = 0; i < iters; ++i) {
         secp256k1_gej_add_var(&sum_output, &sum_output, &data->output[i], NULL);
         if (scalar_gen_offset != NULL) {
@@ -244,7 +244,6 @@ static void generate_scalar(uint32_t num, secp256k1_scalar* scalar) {
 
 static void run_ecmult_multi_bench(bench_data* data, size_t count, int includes_g, int num_iters) {
     char str[32];
-    static const secp256k1_scalar zero = SECP256K1_SCALAR_CONST(0, 0, 0, 0, 0, 0, 0, 0);
     size_t iters = 1 + num_iters / count;
     size_t iter;
 
@@ -262,7 +261,7 @@ static void run_ecmult_multi_bench(bench_data* data, size_t count, int includes_
             secp256k1_scalar_add(&total, &total, &tmp);
         }
         secp256k1_scalar_negate(&total, &total);
-        secp256k1_ecmult(&data->expected_output[iter], NULL, &zero, &total);
+        secp256k1_ecmult(&data->expected_output[iter], NULL, &secp256k1_scalar_zero, &total);
     }
 
     /* Run the benchmark. */

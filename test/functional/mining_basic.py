@@ -28,12 +28,16 @@ from test_framework.p2p import P2PDataStore
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
+    assert_greater_than_or_equal,
     assert_raises_rpc_error,
     get_fee,
 )
 from test_framework.wallet import MiniWallet
 
 
+DIFFICULTY_ADJUSTMENT_INTERVAL = 144
+MAX_FUTURE_BLOCK_TIME = 2 * 3600
+MAX_TIMEWARP = 600
 VERSIONBITS_TOP_BITS = 0x20000000
 VERSIONBITS_DEPLOYMENT_TESTDUMMY_BIT = 28
 DEFAULT_BLOCK_MIN_TX_FEE = 1000  # default `-blockmintxfee` setting [sat/kvB]
@@ -52,7 +56,12 @@ def assert_template(node, block, expect, rehash=True):
 
 class MiningTest(BitcoinTestFramework):
     def set_test_params(self):
-        self.num_nodes = 2
+        self.num_nodes = 3
+        self.extra_args = [
+            [],
+            [],
+            ["-fastprune", "-prune=1"]
+        ]
         self.setup_clean_chain = True
         self.supports_cli = False
 
@@ -114,6 +123,71 @@ class MiningTest(BitcoinTestFramework):
             assert tx_with_min_feerate['txid'] in block_txids
             assert tx_below_min_feerate['txid'] not in block_template_txids
             assert tx_below_min_feerate['txid'] not in block_txids
+
+    def test_timewarp(self):
+        self.log.info("Test timewarp attack mitigation (BIP94)")
+        node = self.nodes[0]
+        self.restart_node(0, extra_args=['-test=bip94'])
+
+        self.log.info("Mine until the last block of the retarget period")
+        blockchain_info = self.nodes[0].getblockchaininfo()
+        n = DIFFICULTY_ADJUSTMENT_INTERVAL - blockchain_info['blocks'] % DIFFICULTY_ADJUSTMENT_INTERVAL - 2
+        t = blockchain_info['time']
+
+        for _ in range(n):
+            t += 600
+            self.nodes[0].setmocktime(t)
+            self.generate(self.wallet, 1, sync_fun=self.no_op)
+
+        self.log.info("Create block two hours in the future")
+        self.nodes[0].setmocktime(t + MAX_FUTURE_BLOCK_TIME)
+        self.generate(self.wallet, 1, sync_fun=self.no_op)
+        assert_equal(node.getblock(node.getbestblockhash())['time'], t + MAX_FUTURE_BLOCK_TIME)
+
+        self.log.info("First block template of retarget period can't use wall clock time")
+        self.nodes[0].setmocktime(t)
+        # The template will have an adjusted timestamp, which we then modify
+        tmpl = node.getblocktemplate(NORMAL_GBT_REQUEST_PARAMS)
+        assert_greater_than_or_equal(tmpl['curtime'], t + MAX_FUTURE_BLOCK_TIME - MAX_TIMEWARP)
+
+        block = CBlock()
+        block.nVersion = tmpl["version"]
+        block.hashPrevBlock = int(tmpl["previousblockhash"], 16)
+        block.nTime = tmpl["curtime"]
+        block.nBits = int(tmpl["bits"], 16)
+        block.nNonce = 0
+        block.vtx = [create_coinbase(height=int(tmpl["height"]))]
+        block.solve()
+        assert_template(node, block, None)
+
+        bad_block = copy.deepcopy(block)
+        bad_block.nTime = t
+        bad_block.solve()
+        assert_raises_rpc_error(-25, 'time-timewarp-attack', lambda: node.submitheader(hexdata=CBlockHeader(bad_block).serialize().hex()))
+
+        self.log.info("Test timewarp protection boundary")
+        bad_block.nTime = t + MAX_FUTURE_BLOCK_TIME - MAX_TIMEWARP - 1
+        bad_block.solve()
+        assert_raises_rpc_error(-25, 'time-timewarp-attack', lambda: node.submitheader(hexdata=CBlockHeader(bad_block).serialize().hex()))
+
+        bad_block.nTime = t + MAX_FUTURE_BLOCK_TIME - MAX_TIMEWARP
+        bad_block.solve()
+        node.submitheader(hexdata=CBlockHeader(bad_block).serialize().hex())
+
+    def test_pruning(self):
+        self.log.info("Test that submitblock stores previously pruned block")
+        prune_node = self.nodes[2]
+        self.generate(prune_node, 400, sync_fun=self.no_op)
+        pruned_block = prune_node.getblock(prune_node.getblockhash(2), verbosity=0)
+        pruned_height = prune_node.pruneblockchain(400)
+        assert_greater_than_or_equal(pruned_height, 2)
+        pruned_blockhash = prune_node.getblockhash(2)
+
+        assert_raises_rpc_error(-1, 'Block not available (pruned data)', prune_node.getblock, pruned_blockhash)
+
+        result = prune_node.submitblock(pruned_block)
+        assert_equal(result, "inconclusive")
+        assert_equal(prune_node.getblock(pruned_blockhash, verbosity=0), pruned_block)
 
     def run_test(self):
         node = self.nodes[0]
@@ -186,9 +260,19 @@ class MiningTest(BitcoinTestFramework):
         bad_block.vtx[0].rehash()
         assert_template(node, bad_block, 'bad-cb-missing')
 
-        self.log.info("submitblock: Test invalid coinbase transaction")
-        assert_raises_rpc_error(-22, "Block does not start with a coinbase", node.submitblock, CBlock().serialize().hex())
-        assert_raises_rpc_error(-22, "Block does not start with a coinbase", node.submitblock, bad_block.serialize().hex())
+        self.log.info("submitblock: Test bad input hash for coinbase transaction")
+        bad_block.solve()
+        assert_equal("bad-cb-missing", node.submitblock(hexdata=bad_block.serialize().hex()))
+
+        self.log.info("submitblock: Test block with no transactions")
+        no_tx_block = copy.deepcopy(block)
+        no_tx_block.vtx.clear()
+        no_tx_block.hashMerkleRoot = 0
+        no_tx_block.solve()
+        assert_equal("bad-blk-length", node.submitblock(hexdata=no_tx_block.serialize().hex()))
+
+        self.log.info("submitblock: Test empty block")
+        assert_equal('high-hash', node.submitblock(hexdata=CBlock().serialize().hex()))
 
         self.log.info("getblocktemplate: Test truncated final transaction")
         assert_raises_rpc_error(-22, "Block decode failed", node.getblocktemplate, {
@@ -308,7 +392,7 @@ class MiningTest(BitcoinTestFramework):
 
         # Should ask for the block from a p2p node, if they announce the header as well:
         peer = node.add_p2p_connection(P2PDataStore())
-        peer.wait_for_getheaders(timeout=5)  # Drop the first getheaders
+        peer.wait_for_getheaders(timeout=5, block_hash=block.hashPrevBlock)
         peer.send_blocks_and_test(blocks=[block], node=node)
         # Must be active now:
         assert chain_tip(block.hash, status='active', branchlen=0) in node.getchaintips()
@@ -322,7 +406,9 @@ class MiningTest(BitcoinTestFramework):
         assert_equal(node.submitblock(hexdata=block.serialize().hex()), 'duplicate')  # valid
 
         self.test_blockmintxfee_parameter()
+        self.test_timewarp()
+        self.test_pruning()
 
 
 if __name__ == '__main__':
-    MiningTest().main()
+    MiningTest(__file__).main()

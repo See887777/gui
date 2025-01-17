@@ -37,7 +37,7 @@ from test_framework.util import (
 from test_framework.wallet import getnewdestination
 from test_framework.wallet_util import generate_keypair
 
-NULLDUMMY_ERROR = "non-mandatory-script-verify-flag (Dummy CHECKMULTISIG argument must be zero)"
+NULLDUMMY_ERROR = "mandatory-script-verify-flag-failed (Dummy CHECKMULTISIG argument must be zero)"
 
 
 def invalidate_nulldummy_tx(tx):
@@ -57,7 +57,6 @@ class NULLDUMMYTest(BitcoinTestFramework):
         self.extra_args = [[
             f'-testactivationheight=segwit@{COINBASE_MATURITY + 5}',
             '-addresstype=legacy',
-            '-par=1',  # Use only one script thread to get the exact reject reason for testing
         ]]
 
     def create_transaction(self, *, txid, input_details=None, addr, amount, privkey):
@@ -154,4 +153,4 @@ class NULLDUMMYTest(BitcoinTestFramework):
 
 
 if __name__ == '__main__':
-    NULLDUMMYTest().main()
+    NULLDUMMYTest(__file__).main()

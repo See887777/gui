@@ -17,6 +17,8 @@
 #include <streams.h>
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
+#include <test/fuzz/util.h>
+#include <test/util/random.h>
 #include <util/chaintype.h>
 #include <util/strencodings.h>
 
@@ -31,12 +33,13 @@
 
 void initialize_key()
 {
-    ECC_Start();
+    static ECC_Context ecc_context{};
     SelectParams(ChainType::REGTEST);
 }
 
 FUZZ_TARGET(key, .init = initialize_key)
 {
+    SeedRandomStateForTest(SeedRand::ZEROS);
     const CKey key = [&] {
         CKey k;
         k.Set(buffer.begin(), buffer.end(), true);
@@ -75,16 +78,6 @@ FUZZ_TARGET(key, .init = initialize_key)
         CKey copied_key;
         copied_key.Set(key.begin(), key.end(), key.IsCompressed());
         assert(copied_key == key);
-    }
-
-    {
-        CKey negated_key = key;
-        negated_key.Negate();
-        assert(negated_key.IsValid());
-        assert(!(negated_key == key));
-
-        negated_key.Negate();
-        assert(negated_key == key);
     }
 
     const uint256 random_uint256 = Hash(buffer);
@@ -185,7 +178,7 @@ FUZZ_TARGET(key, .init = initialize_key)
         const CTxDestination tx_destination = GetDestinationForKey(pubkey, output_type);
         assert(output_type == OutputType::LEGACY);
         assert(IsValidDestination(tx_destination));
-        assert(CTxDestination{PKHash{pubkey}} == tx_destination);
+        assert(PKHash{pubkey} == *std::get_if<PKHash>(&tx_destination));
 
         const CScript script_for_destination = GetScriptForDestination(tx_destination);
         assert(script_for_destination.size() == 25);
@@ -312,10 +305,7 @@ FUZZ_TARGET(ellswift_roundtrip, .init = initialize_key)
 {
     FuzzedDataProvider fdp{buffer.data(), buffer.size()};
 
-    auto key_bytes = fdp.ConsumeBytes<uint8_t>(32);
-    key_bytes.resize(32);
-    CKey key;
-    key.Set(key_bytes.begin(), key_bytes.end(), true);
+    CKey key = ConsumePrivateKey(fdp, /*compressed=*/true);
     if (!key.IsValid()) return;
 
     auto ent32 = fdp.ConsumeBytes<std::byte>(32);
@@ -324,7 +314,10 @@ FUZZ_TARGET(ellswift_roundtrip, .init = initialize_key)
     auto encoded_ellswift = key.EllSwiftCreate(ent32);
     auto decoded_pubkey = encoded_ellswift.Decode();
 
-    assert(key.VerifyPubKey(decoded_pubkey));
+    uint256 hash{ConsumeUInt256(fdp)};
+    std::vector<unsigned char> sig;
+    key.Sign(hash, sig);
+    assert(decoded_pubkey.Verify(hash, sig));
 }
 
 FUZZ_TARGET(bip324_ecdh, .init = initialize_key)
@@ -332,17 +325,11 @@ FUZZ_TARGET(bip324_ecdh, .init = initialize_key)
     FuzzedDataProvider fdp{buffer.data(), buffer.size()};
 
     // We generate private key, k1.
-    auto rnd32 = fdp.ConsumeBytes<uint8_t>(32);
-    rnd32.resize(32);
-    CKey k1;
-    k1.Set(rnd32.begin(), rnd32.end(), true);
+    CKey k1 = ConsumePrivateKey(fdp, /*compressed=*/true);
     if (!k1.IsValid()) return;
 
     // They generate private key, k2.
-    rnd32 = fdp.ConsumeBytes<uint8_t>(32);
-    rnd32.resize(32);
-    CKey k2;
-    k2.Set(rnd32.begin(), rnd32.end(), true);
+    CKey k2 = ConsumePrivateKey(fdp, /*compressed=*/true);
     if (!k2.IsValid()) return;
 
     // We construct an ellswift encoding for our key, k1_ellswift.

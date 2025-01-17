@@ -77,6 +77,10 @@ static const unsigned int MAX_OP_RETURN_RELAY = 83;
  */
 static constexpr unsigned int EXTRA_DESCENDANT_TX_SIZE_LIMIT{10000};
 
+/**
+ * Maximum number of ephemeral dust outputs allowed.
+ */
+static constexpr unsigned int MAX_DUST_OUTPUTS_PER_TX{1};
 
 /**
  * Mandatory script verification flags that all new transactions must comply with for
@@ -86,30 +90,31 @@ static constexpr unsigned int EXTRA_DESCENDANT_TX_SIZE_LIMIT{10000};
  * Note that this does not affect consensus validity; see GetBlockScriptFlags()
  * for that.
  */
-static const unsigned int MANDATORY_SCRIPT_VERIFY_FLAGS = SCRIPT_VERIFY_P2SH;
+static constexpr unsigned int MANDATORY_SCRIPT_VERIFY_FLAGS{SCRIPT_VERIFY_P2SH |
+                                                             SCRIPT_VERIFY_DERSIG |
+                                                             SCRIPT_VERIFY_NULLDUMMY |
+                                                             SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
+                                                             SCRIPT_VERIFY_CHECKSEQUENCEVERIFY |
+                                                             SCRIPT_VERIFY_WITNESS |
+                                                             SCRIPT_VERIFY_TAPROOT};
 
 /**
  * Standard script verification flags that standard transactions will comply
  * with. However we do not ban/disconnect nodes that forward txs violating
- * these rules, for better forwards and backwards compatability.
+ * the additional (non-mandatory) rules here, to improve forwards and
+ * backwards compatibility.
  */
 static constexpr unsigned int STANDARD_SCRIPT_VERIFY_FLAGS{MANDATORY_SCRIPT_VERIFY_FLAGS |
-                                                             SCRIPT_VERIFY_DERSIG |
                                                              SCRIPT_VERIFY_STRICTENC |
                                                              SCRIPT_VERIFY_MINIMALDATA |
-                                                             SCRIPT_VERIFY_NULLDUMMY |
                                                              SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS |
                                                              SCRIPT_VERIFY_CLEANSTACK |
                                                              SCRIPT_VERIFY_MINIMALIF |
                                                              SCRIPT_VERIFY_NULLFAIL |
-                                                             SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
-                                                             SCRIPT_VERIFY_CHECKSEQUENCEVERIFY |
                                                              SCRIPT_VERIFY_LOW_S |
-                                                             SCRIPT_VERIFY_WITNESS |
                                                              SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM |
                                                              SCRIPT_VERIFY_WITNESS_PUBKEYTYPE |
                                                              SCRIPT_VERIFY_CONST_SCRIPTCODE |
-                                                             SCRIPT_VERIFY_TAPROOT |
                                                              SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION |
                                                              SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS |
                                                              SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE};
@@ -126,11 +131,13 @@ bool IsDust(const CTxOut& txout, const CFeeRate& dustRelayFee);
 
 bool IsStandard(const CScript& scriptPubKey, const std::optional<unsigned>& max_datacarrier_bytes, TxoutType& whichType);
 
+/** Get the vout index numbers of all dust outputs */
+std::vector<uint32_t> GetDust(const CTransaction& tx, CFeeRate dust_relay_rate);
 
 // Changing the default transaction version requires a two step process: first
 // adapting relay policy by bumping TX_MAX_STANDARD_VERSION, and then later
 // allowing the new transaction version in the wallet/RPC.
-static constexpr decltype(CTransaction::nVersion) TX_MAX_STANDARD_VERSION{2};
+static constexpr decltype(CTransaction::version) TX_MAX_STANDARD_VERSION{3};
 
 /**
 * Check for standard transaction types

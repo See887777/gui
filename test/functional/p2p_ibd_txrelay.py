@@ -53,7 +53,7 @@ class P2PIBDTxRelayTest(BitcoinTestFramework):
         peer_inver.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=txid)]))
         # The node should not send a getdata, but if it did, it would first delay 2 seconds
         self.nodes[0].setmocktime(int(time.time() + NONPREF_PEER_TX_DELAY))
-        peer_inver.sync_send_with_ping()
+        peer_inver.sync_with_ping()
         with p2p_lock:
             assert txid not in peer_inver.getdata_requests
         self.nodes[0].disconnect_p2ps()
@@ -86,4 +86,4 @@ class P2PIBDTxRelayTest(BitcoinTestFramework):
             peer_txer.send_and_ping(msg_tx(tx))
 
 if __name__ == '__main__':
-    P2PIBDTxRelayTest().main()
+    P2PIBDTxRelayTest(__file__).main()

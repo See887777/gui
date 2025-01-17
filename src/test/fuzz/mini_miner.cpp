@@ -1,3 +1,7 @@
+// Copyright (c) The Bitcoin Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
@@ -7,11 +11,14 @@
 #include <test/util/txmempool.h>
 #include <test/util/mining.h>
 
-#include <node/mini_miner.h>
 #include <node/miner.h>
+#include <node/mini_miner.h>
 #include <primitives/transaction.h>
 #include <random.h>
 #include <txmempool.h>
+#include <util/check.h>
+#include <util/time.h>
+#include <util/translation.h>
 
 #include <deque>
 #include <vector>
@@ -25,15 +32,19 @@ void initialize_miner()
     static const auto testing_setup = MakeNoLogFileContext<const TestingSetup>();
     g_setup = testing_setup.get();
     for (uint32_t i = 0; i < uint32_t{100}; ++i) {
-        g_available_coins.push_back(COutPoint{uint256::ZERO, i});
+        g_available_coins.emplace_back(Txid::FromUint256(uint256::ZERO), i);
     }
 }
 
 // Test that the MiniMiner can run with various outpoints and feerates.
 FUZZ_TARGET(mini_miner, .init = initialize_miner)
 {
+    SeedRandomStateForTest(SeedRand::ZEROS);
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
-    CTxMemPool pool{CTxMemPool::Options{}};
+    SetMockTime(ConsumeTime(fuzzed_data_provider));
+    bilingual_str error;
+    CTxMemPool pool{CTxMemPool::Options{}, error};
+    Assert(error.empty());
     std::vector<COutPoint> outpoints;
     std::deque<COutPoint> available_coins = g_available_coins;
     LOCK2(::cs_main, pool.cs);
@@ -45,29 +56,29 @@ FUZZ_TARGET(mini_miner, .init = initialize_miner)
         const size_t num_outputs = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(1, 50);
         for (size_t n{0}; n < num_inputs; ++n) {
             auto prevout = available_coins.front();
-            mtx.vin.push_back(CTxIn(prevout, CScript()));
+            mtx.vin.emplace_back(prevout, CScript());
             available_coins.pop_front();
         }
         for (uint32_t n{0}; n < num_outputs; ++n) {
-            mtx.vout.push_back(CTxOut(100, P2WSH_OP_TRUE));
+            mtx.vout.emplace_back(100, P2WSH_OP_TRUE);
         }
         CTransactionRef tx = MakeTransactionRef(mtx);
         TestMemPoolEntryHelper entry;
         const CAmount fee{ConsumeMoney(fuzzed_data_provider, /*max=*/MAX_MONEY/100000)};
         assert(MoneyRange(fee));
-        pool.addUnchecked(entry.Fee(fee).FromTx(tx));
+        AddToMempool(pool, entry.Fee(fee).FromTx(tx));
 
         // All outputs are available to spend
         for (uint32_t n{0}; n < num_outputs; ++n) {
             if (fuzzed_data_provider.ConsumeBool()) {
-                available_coins.push_back(COutPoint{tx->GetHash(), n});
+                available_coins.emplace_back(tx->GetHash(), n);
             }
         }
 
         if (fuzzed_data_provider.ConsumeBool() && !tx->vout.empty()) {
             // Add outpoint from this tx (may or not be spent by a later tx)
-            outpoints.push_back(COutPoint{tx->GetHash(),
-                                          (uint32_t)fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, tx->vout.size())});
+            outpoints.emplace_back(tx->GetHash(),
+                                          (uint32_t)fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, tx->vout.size()));
         } else {
             // Add some random outpoint (will be interpreted as confirmed or not yet submitted
             // to mempool).
@@ -108,8 +119,12 @@ FUZZ_TARGET(mini_miner, .init = initialize_miner)
 // Test that MiniMiner and BlockAssembler build the same block given the same transactions and constraints.
 FUZZ_TARGET(mini_miner_selection, .init = initialize_miner)
 {
+    SeedRandomStateForTest(SeedRand::ZEROS);
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
-    CTxMemPool pool{CTxMemPool::Options{}};
+    SetMockTime(ConsumeTime(fuzzed_data_provider));
+    bilingual_str error;
+    CTxMemPool pool{CTxMemPool::Options{}, error};
+    Assert(error.empty());
     // Make a copy to preserve determinism.
     std::deque<COutPoint> available_coins = g_available_coins;
     std::vector<CTransactionRef> transactions;
@@ -123,11 +138,11 @@ FUZZ_TARGET(mini_miner_selection, .init = initialize_miner)
         const size_t num_outputs = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(2, 5);
         for (size_t n{0}; n < num_inputs; ++n) {
             auto prevout = available_coins.at(0);
-            mtx.vin.push_back(CTxIn(prevout, CScript()));
+            mtx.vin.emplace_back(prevout, CScript());
             available_coins.pop_front();
         }
         for (uint32_t n{0}; n < num_outputs; ++n) {
-            mtx.vout.push_back(CTxOut(100, P2WSH_OP_TRUE));
+            mtx.vout.emplace_back(100, P2WSH_OP_TRUE);
         }
         CTransactionRef tx = MakeTransactionRef(mtx);
 
@@ -136,9 +151,9 @@ FUZZ_TARGET(mini_miner_selection, .init = initialize_miner)
         // MiniMiner interprets spent coins as to-be-replaced and excludes them.
         for (uint32_t n{0}; n < num_outputs - 1; ++n) {
             if (fuzzed_data_provider.ConsumeBool()) {
-                available_coins.push_front(COutPoint{tx->GetHash(), n});
+                available_coins.emplace_front(tx->GetHash(), n);
             } else {
-                available_coins.push_back(COutPoint{tx->GetHash(), n});
+                available_coins.emplace_back(tx->GetHash(), n);
             }
         }
 
@@ -148,7 +163,7 @@ FUZZ_TARGET(mini_miner_selection, .init = initialize_miner)
         TestMemPoolEntryHelper entry;
         const CAmount fee{ConsumeMoney(fuzzed_data_provider, /*max=*/MAX_MONEY/100000)};
         assert(MoneyRange(fee));
-        pool.addUnchecked(entry.Fee(fee).FromTx(tx));
+        AddToMempool(pool, entry.Fee(fee).FromTx(tx));
         transactions.push_back(tx);
     }
     std::vector<COutPoint> outpoints;
@@ -168,23 +183,23 @@ FUZZ_TARGET(mini_miner_selection, .init = initialize_miner)
     miner_options.blockMinFeeRate = target_feerate;
     miner_options.nBlockMaxWeight = DEFAULT_BLOCK_MAX_WEIGHT;
     miner_options.test_block_validity = false;
+    miner_options.coinbase_output_script = CScript() << OP_0;
 
     node::BlockAssembler miner{g_setup->m_node.chainman->ActiveChainstate(), &pool, miner_options};
     node::MiniMiner mini_miner{pool, outpoints};
     assert(mini_miner.IsReadyToCalculate());
 
-    CScript spk_placeholder = CScript() << OP_0;
     // Use BlockAssembler as oracle. BlockAssembler and MiniMiner should select the same
     // transactions, stopping once packages do not meet target_feerate.
-    const auto blocktemplate{miner.CreateNewBlock(spk_placeholder)};
+    const auto blocktemplate{miner.CreateNewBlock()};
     mini_miner.BuildMockTemplate(target_feerate);
     assert(!mini_miner.IsReadyToCalculate());
     auto mock_template_txids = mini_miner.GetMockTemplateTxids();
     // MiniMiner doesn't add a coinbase tx.
     assert(mock_template_txids.count(blocktemplate->block.vtx[0]->GetHash()) == 0);
-    mock_template_txids.emplace(blocktemplate->block.vtx[0]->GetHash());
-    assert(mock_template_txids.size() <= blocktemplate->block.vtx.size());
-    assert(mock_template_txids.size() >= blocktemplate->block.vtx.size());
+    auto [iter, new_entry] = mock_template_txids.emplace(blocktemplate->block.vtx[0]->GetHash());
+    assert(new_entry);
+
     assert(mock_template_txids.size() == blocktemplate->block.vtx.size());
     for (const auto& tx : blocktemplate->block.vtx) {
         assert(mock_template_txids.count(tx->GetHash()));
